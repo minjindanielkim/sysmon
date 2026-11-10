@@ -1,38 +1,48 @@
-#include "stats.h"
-#include <cstdio>
+#include "sampler.h"
+#include "ui.h"
+
+#include <chrono>
+#include <csignal>
+
+// Set by Ctrl-C (SIGINT), SIGTERM or the terminal closing (SIGHUP). The handler
+// only flips this flag; the main loop notices it within ~100 ms and returns,
+// so Ui's destructor runs endwin() and the terminal is restored.
+static volatile std::sig_atomic_t g_quit = 0;
+static void onSignal(int) { g_quit = 1; }
 
 int main() {
+  // Install before Ui starts, so ncurses keeps our handlers instead of its own
+  std::signal(SIGINT, onSignal);
+  std::signal(SIGTERM, onSignal);
+  std::signal(SIGHUP, onSignal);
 
-  CpuInfo c = getCpuInfo();
+#ifdef __APPLE__
+  const char* diskPath = "/System/Volumes/Data";  // where user data lives on macOS
+#else
+  const char* diskPath = "/";
+#endif
 
-  if (c.ok) {
-      std::printf("CPU: %s (%d cores) %.1f%%\n", c.model.c_str(), c.cores, c.usage);
-  } else {
-      std::puts("CPU: N/A");
+  using Clock = std::chrono::steady_clock;
+  const auto interval = std::chrono::seconds(1);
+
+  Sampler sampler(diskPath);
+  sampler.tick();
+  auto nextSample = Clock::now() + interval;
+
+  Ui ui;
+  while (!g_quit) {
+    ui.draw(sampler.latest());
+
+    // Blocks for up to ~100 ms, which paces the loop. Resize needs no special
+    // handling: ncurses updates the screen size and the next draw() uses it.
+    if (ui.readKey() == Ui::Key::Quit) break;
+
+    auto now = Clock::now();
+    if (now >= nextSample) {
+      sampler.tick();
+      nextSample += interval;
+      if (nextSample <= now) nextSample = now + interval;  // fell behind (e.g. suspended)
+    }
   }
-
-  DiskInfo d = getDiskInfo("/System/Volumes/Data");
-
-  if(!d.ok) {
-    std::puts("Disk: N/A");
-    return 1;
-  }
-
-  const double GB = 1024.0 * 1024 * 1024;
-
-  std::printf("Disk {%s}: %.1f / %.1f GB (%.0f%%)\n",
-      d.mount.c_str(),
-      d.used / GB,
-      d.total / GB,
-      100.0 * d.used / d.total);
-
-  MemInfo m = getMemInfo();
-  if (m.ok) {
-      std::printf("RAM: %.1f / %.1f GB (%.0f%%)\n",
-                  m.used / GB, m.total / GB, 100.0 * m.used / m.total);
-  } else {
-      std::puts("RAM: N/A");
-  }  
   return 0;
 }
-

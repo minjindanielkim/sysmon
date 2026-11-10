@@ -25,7 +25,22 @@ struct CpuInfo {
 };
 
 
+// CPU usage is a rate (busy ticks / total ticks over some interval), so it
+// needs two readings. CpuSampler remembers the previous reading, and each
+// sample() call reports usage since the last call, with no sleeping.
+class CpuSampler {
+public:
+  CpuSampler();      // reads model + core count and takes the first reading
+  CpuInfo sample();  // usage since the previous call (0% on the very first)
+
+private:
+  static constexpr int kStates = 4;  // user, system, idle, nice
+  std::string model_;
+  int cores_ = 0;
+  uint32_t prevTicks_[kStates] = {};
+  bool havePrev_ = false;
+};
+
 DiskInfo getDiskInfo(const std::string& path);
 MemInfo getMemInfo();
-CpuInfo getCpuInfo();
 

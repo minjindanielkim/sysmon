@@ -1,8 +1,7 @@
 #include "stats.h"
 #include <sys/sysctl.h>
 #include <mach/mach.h>
-#include <thread>
-#include <chrono>
+#include <algorithm>
 
 MemInfo getMemInfo() {
     // Total RAM (same as before)
@@ -34,52 +33,64 @@ MemInfo getMemInfo() {
     return {total, used, true};
 }
 
-// Reads the CPU tick counters. Returns false if the call fails.
-static bool readCpuTicks(uint64_t& busy, uint64_t& total) {
+// Reads the raw CPU tick counters (summed across all cores).
+// Returns false if the call fails.
+static bool readCpuTicks(uint32_t ticks[CPU_STATE_MAX]) {
     host_cpu_load_info_data_t info;
     mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
     if (host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO,
                         (host_info_t)&info, &count) != KERN_SUCCESS) {
         return false;
     }
-
-    uint64_t user = info.cpu_ticks[CPU_STATE_USER];
-    uint64_t sys  = info.cpu_ticks[CPU_STATE_SYSTEM];
-    uint64_t nice = info.cpu_ticks[CPU_STATE_NICE];
-    uint64_t idle = info.cpu_ticks[CPU_STATE_IDLE];
-
-    busy  = user + sys + nice;
-    total = busy + idle;
+    for (int i = 0; i < CPU_STATE_MAX; ++i) ticks[i] = info.cpu_ticks[i];
     return true;
 }
 
-CpuInfo getCpuInfo() {
-    CpuInfo cpu{"Unknown", 0, 0.0, false};
+CpuSampler::CpuSampler() : model_("Unknown") {
+    static_assert(kStates == CPU_STATE_MAX, "tick array size mismatch");
 
     // CPU model name: a string, so we pass a character buffer
     char model[256];
     size_t size = sizeof(model);
     if (sysctlbyname("machdep.cpu.brand_string", model, &size, nullptr, 0) == 0) {
-        cpu.model = model;
+        model_ = model;
     }
 
     // Number of logical cores
     int cores = 0;
     size = sizeof(cores);
     if (sysctlbyname("hw.logicalcpu", &cores, &size, nullptr, 0) == 0) {
-        cpu.cores = cores;
+        cores_ = cores;
     }
 
-    // Sample the tick counters twice, one second apart
-    uint64_t busy1, total1, busy2, total2;
-    if (!readCpuTicks(busy1, total1)) return cpu;
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    if (!readCpuTicks(busy2, total2)) return cpu;
+    // Baseline reading, so the first sample() has something to compare to
+    havePrev_ = readCpuTicks(prevTicks_);
+}
 
-    uint64_t totalDiff = total2 - total1;
-    if (totalDiff == 0) return cpu;   // avoid dividing by zero
+CpuInfo CpuSampler::sample() {
+    CpuInfo cpu{model_, cores_, 0.0, false};
 
-    cpu.usage = 100.0 * (busy2 - busy1) / totalDiff;
+    uint32_t now[kStates];
+    if (!readCpuTicks(now)) return cpu;
+
+    if (!havePrev_) {
+        // No baseline yet: store this one and report 0% for now
+        std::copy(now, now + kStates, prevTicks_);
+        havePrev_ = true;
+        cpu.ok = true;
+        return cpu;
+    }
+
+    // The kernel counters are 32-bit and wrap around on long uptimes.
+    // Subtracting in uint32_t arithmetic gives the right difference anyway.
+    uint32_t d[kStates];
+    for (int i = 0; i < kStates; ++i) d[i] = now[i] - prevTicks_[i];
+    std::copy(now, now + kStates, prevTicks_);
+
+    uint64_t busy  = uint64_t(d[CPU_STATE_USER]) + d[CPU_STATE_SYSTEM] + d[CPU_STATE_NICE];
+    uint64_t total = busy + d[CPU_STATE_IDLE];
+
     cpu.ok = true;
+    if (total > 0) cpu.usage = 100.0 * busy / total;  // else: no time passed, keep 0%
     return cpu;
 }
