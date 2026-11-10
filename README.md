@@ -1,7 +1,7 @@
 # sysmon
 
-A live terminal dashboard for CPU, memory, disk and processes on macOS,
-written in C++17 with ncurses.
+A live terminal dashboard for CPU, memory, disk, network and processes on
+macOS, written in C++17 with ncurses.
 
 ```
  sysmon   load 1.91 1.54 1.47 · up 1d 3h               11:30:22
@@ -17,6 +17,9 @@ written in C++17 with ncurses.
 │ 228.1 GB used of 460.4 GB                              49.6% │
 │ [-----------------------------C o  o  o  o  o  o  o  o  o  ] │
 └──────────────────────────────────────────────────────────────┘
+┌─ Network · en0 ──────────────────────────────────────────────┐
+│ ↓ 98.7 KB/s    ↑ 3.6 KB/s          total ↓ 7.0 GB ↑ 407.2 MB │
+└──────────────────────────────────────────────────────────────┘
 ┌─ Processes · 733 (423 readable) · sort: CPU ▼ ───────────────┐
 │    PID   CPU%       MEM  THR  NAME                           │
 │  27461   99.8  832.2 KB    1  yes                            │
@@ -31,6 +34,8 @@ written in C++17 with ncurses.
   colour follows pressure rather than percentage, since macOS deliberately
   fills spare RAM with cache.
 - **Disk:** used vs total for one volume
+- **Network:** download and upload speed, combined across Wi-Fi and
+  Ethernet, plus the totals since each interface came up
 - **Processes:** every running process with its CPU %, memory and thread
   count, sortable and scrollable (see below)
 - **Header:** 1/5/15-minute load averages, uptime and the time
@@ -86,6 +91,15 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | `PgUp` `PgDn` | Scroll one page |
 | `Home` `End` | Jump to the top / bottom |
 
+## About the network panel
+
+- Speeds are averaged over the last update interval, in bytes per second
+  (as Activity Monitor shows them, not bits).
+- Only physical interfaces (Wi-Fi, Ethernet) are counted. Loopback traffic
+  never leaves the Mac, and VPN tunnels carry packets that also cross
+  Wi-Fi or Ethernet, so including them would count the same bytes twice.
+- The title lists the interfaces that have carried traffic.
+
 ## About the process list
 
 - **CPU %** is per core, as in `top` and Activity Monitor, so a busy
@@ -106,6 +120,7 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | `src/stats.h` | Data structures and the functions that read system stats |
 | `src/stats_macos.cpp` | CPU, memory, swap, pressure, load and uptime on macOS |
 | `src/stats_posix.cpp` | Disk usage (portable) |
+| `src/net.h`, `src/net_macos.cpp` | Network rates and totals via the interface MIB |
 | `src/proc.h`, `src/proc_macos.cpp` | Process list via libproc, per-process CPU % |
 | `src/sampler.*` | Collects one snapshot of everything per update |
 | `src/options.*` | Command-line parsing and interval steps |

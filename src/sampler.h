@@ -1,5 +1,6 @@
 #pragma once
 
+#include "net.h"
 #include "proc.h"
 #include "stats.h"
 #include <string>
@@ -9,6 +10,7 @@ struct Snapshot {
   CpuInfo cpu{};
   MemInfo mem{};
   DiskInfo disk{};
+  NetInfo net{};
   SysInfo sys{};
   ProcList procs{};
 };
@@ -24,6 +26,7 @@ public:
 
 private:
   CpuSampler cpu_;
+  NetSampler net_;
   ProcSampler proc_;
   std::string diskPath_;
   Snapshot latest_;

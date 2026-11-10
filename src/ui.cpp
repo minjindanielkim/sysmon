@@ -21,9 +21,11 @@ namespace {
 enum Pair : short { kGreen = 1, kYellow, kRed, kAccent, kDim };
 
 constexpr int kMinWidth = 40;
-constexpr int kPanelHeight = 4;  // border, info line, bar line, border
-constexpr int kNumPanels = 3;
-constexpr int kMinHeight = 1 + kNumPanels * kPanelHeight + 1;  // header + panels + footer
+constexpr int kPanelHeight = 4;     // border, info line, bar line, border
+constexpr int kNetPanelHeight = 3;  // border, rates line, border (no bar: no maximum)
+constexpr int kNumBarPanels = 3;    // CPU, memory, disk
+// header + panels + footer
+constexpr int kMinHeight = 1 + kNumBarPanels * kPanelHeight + kNetPanelHeight + 1;
 constexpr int kMinProcPanel = 4;  // border, column header, one row, border
 
 bool g_colors = false;
@@ -44,6 +46,16 @@ std::string fmtBytes(uint64_t bytes) {
   while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
   char buf[32];
   std::snprintf(buf, sizeof(buf), u == 0 ? "%.0f %s" : "%.1f %s", v, units[u]);
+  return buf;
+}
+
+// "512 B/s", "35.0 KB/s", "1.2 MB/s"
+std::string fmtRate(double bytesPerSec) {
+  static const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s"};
+  int u = 0;
+  while (bytesPerSec >= 1024.0 && u < 3) { bytesPerSec /= 1024.0; ++u; }
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), u == 0 ? "%.0f %s" : "%.1f %s", bytesPerSec, units[u]);
   return buf;
 }
 
@@ -204,6 +216,45 @@ void drawDisk(int y, int w, const DiskInfo& d) {
   drawInfoLine(y + 1, ix, iw, fmtBytes(d.used) + " used of " + fmtBytes(d.total),
                fmtPercent(frac * 100));
   drawChompBar(y + 2, ix, iw, frac);
+}
+
+// ┌─ Network · en0 ─────────────────────────────────────────────┐
+// │ ↓ 1.2 MB/s     ↑ 35.0 KB/s          total ↓ 7.0 GB ↑ 406.3 MB │
+// └─────────────────────────────────────────────────────────────┘
+void drawNetwork(int y, int w, const NetInfo& n) {
+  std::string title = "Network";
+  for (size_t i = 0; i < n.names.size(); ++i) title += (i ? ", " : " · ") + n.names[i];
+  drawBox(y, 0, kNetPanelHeight, w, title);
+  int ix = 2, iw = w - 4;
+  if (!n.ok) { drawUnavailable(y + 1, ix); return; }
+
+  // Each rate gets a fixed-width slot ("1023.9 KB/s" is the widest), so the
+  // upload figure doesn't shift sideways as the download figure changes
+  constexpr int kRateWidth = 11;
+  auto rate = [&](double r) {
+    std::string s = n.measured ? fmtRate(r) : "--";
+    return s + std::string(std::max(0, kRateWidth - cols(s)), ' ');
+  };
+  const int upX = ix + 2 + kRateWidth + 2;  // "↓ " + slot + gap
+  const int ratesWidth = upX + 2 + kRateWidth - ix;
+
+  color_on(kGreen);
+  mvaddstr(y + 1, ix, "↓");
+  color_off(kGreen);
+  color_on(kAccent);
+  mvaddstr(y + 1, upX, "↑");
+  color_off(kAccent);
+  attron(A_BOLD);
+  mvaddstr(y + 1, ix + 2, rate(n.rxRate).c_str());
+  mvaddstr(y + 1, upX + 2, rate(n.txRate).c_str());
+  attroff(A_BOLD);
+
+  std::string total = "total ↓ " + fmtBytes(n.rxTotal) + " ↑ " + fmtBytes(n.txTotal);
+  if (ratesWidth + 1 + cols(total) <= iw) {
+    color_on(kDim);
+    mvaddstr(y + 1, ix + iw - cols(total), total.c_str());
+    color_off(kDim);
+  }
 }
 
 // " sysmon   load 1.45 1.39 1.42 · up 1d 3h            11:29:04"
@@ -455,6 +506,7 @@ void Ui::draw(const Snapshot& s, ViewState& view) {
   drawCpu(y, w, s.cpu);       y += kPanelHeight;
   drawMemory(y, w, s.mem);    y += kPanelHeight;
   drawDisk(y, w, s.disk);     y += kPanelHeight;
+  drawNetwork(y, w, s.net);   y += kNetPanelHeight;
 
   // The process panel takes the rest of the screen above the footer, if
   // there's room for at least one row; otherwise it's left out.
