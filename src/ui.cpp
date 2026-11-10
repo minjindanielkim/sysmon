@@ -50,6 +50,37 @@ std::string fmtPercent(double pct) {
   return buf;
 }
 
+// "3d 4h", "4h 12m" or "12m": the two most significant units.
+std::string fmtUptime(uint64_t sec) {
+  uint64_t d = sec / 86400, h = sec % 86400 / 3600, m = sec % 3600 / 60;
+  char buf[32];
+  if (d > 0)      std::snprintf(buf, sizeof(buf), "%llud %lluh", (unsigned long long)d, (unsigned long long)h);
+  else if (h > 0) std::snprintf(buf, sizeof(buf), "%lluh %llum", (unsigned long long)h, (unsigned long long)m);
+  else            std::snprintf(buf, sizeof(buf), "%llum", (unsigned long long)m);
+  return buf;
+}
+
+// Width in terminal columns of a UTF-8 string. Every character we draw is
+// one column wide, so this counts characters (bytes that aren't UTF-8
+// continuation bytes), not bytes: "·" is 2 bytes but 1 column.
+int cols(const std::string& s) {
+  int n = 0;
+  for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) ++n;
+  return n;
+}
+
+// Cuts a UTF-8 string to at most `max` columns without splitting a
+// multi-byte character (which would print as garbage).
+std::string fit(const std::string& s, int max) {
+  if (max <= 0) return "";
+  int n = 0;
+  for (size_t i = 0; i < s.size(); ++i) {
+    bool startsChar = (static_cast<unsigned char>(s[i]) & 0xC0) != 0x80;
+    if (startsChar && n++ == max) return s.substr(0, i);
+  }
+  return s;
+}
+
 // Bordered panel with a bold title on the top edge.
 // Drawn with Unicode box characters rather than ncurses' ACS_* line drawing:
 // ACS relies on the terminal's alternate-charset mode, which some terminals
@@ -63,21 +94,18 @@ void drawBox(int y, int x, int h, int w, const std::string& title) {
     mvaddwstr(r, x + w - 1, L"│");
   }
 
-  std::string t = " " + title + " ";
-  if (static_cast<int>(t.size()) > w - 4) t = t.substr(0, std::max(0, w - 4));
+  std::string t = fit(" " + title + " ", w - 4);
   attron(A_BOLD);
   mvaddstr(y, x + 2, t.c_str());
   attroff(A_BOLD);
 }
 
 // One line of text: `left` on the left, `right` (bold) flush right.
-void drawInfoLine(int y, int x, int w, std::string left, const std::string& right) {
-  int room = w - static_cast<int>(right.size()) - 1;
-  if (room < 0) room = 0;
-  if (static_cast<int>(left.size()) > room) left = left.substr(0, room);
-  mvaddstr(y, x, left.c_str());
+void drawInfoLine(int y, int x, int w, const std::string& left, const std::string& right) {
+  int rw = cols(right);
+  mvaddstr(y, x, fit(left, w - rw - 1).c_str());
   attron(A_BOLD);
-  mvaddstr(y, x + w - static_cast<int>(right.size()), right.c_str());
+  mvaddstr(y, x + w - rw, right.c_str());
   attroff(A_BOLD);
 }
 
@@ -92,15 +120,16 @@ bool mouthOpen() {
 // Progress bar in the style of pacman's ILoveCandy option (on by default in
 // CachyOS): Pac-Man eats a row of pellets, leaving a trail of dashes.
 //   [-------------C  o  o  o  o ]
-// The trail is coloured by level (green / yellow / red); Pac-Man is bold yellow.
-void drawChompBar(int y, int x, int w, double fraction) {
+// The trail is coloured by level (green / yellow / red) unless `color` is
+// given; Pac-Man is bold yellow.
+void drawChompBar(int y, int x, int w, double fraction, short color = 0) {
   int inner = w - 2;  // space between the brackets
   fraction = std::clamp(fraction, 0.0, 1.0);
   int eaten = static_cast<int>(std::lround(fraction * inner));
 
   mvaddch(y, x, '[');
 
-  short c = levelColor(fraction);
+  short c = color ? color : levelColor(fraction);
   color_on(c);
   mvaddstr(y, x + 1, std::string(eaten, '-').c_str());
   color_off(c);
@@ -132,19 +161,36 @@ void drawCpu(int y, int w, const CpuInfo& c) {
   drawBox(y, 0, kPanelHeight, w, "CPU");
   int ix = 2, iw = w - 4;
   if (!c.ok) { drawUnavailable(y + 1, ix); return; }
+  // Until a second reading exists there's no honest number to show
   drawInfoLine(y + 1, ix, iw, c.model + " · " + std::to_string(c.cores) + " cores",
-               fmtPercent(c.usage));
-  drawChompBar(y + 2, ix, iw, c.usage / 100.0);
+               c.measured ? fmtPercent(c.usage) : "--");
+  drawChompBar(y + 2, ix, iw, c.measured ? c.usage / 100.0 : 0.0);
 }
 
 void drawMemory(int y, int w, const MemInfo& m) {
-  drawBox(y, 0, kPanelHeight, w, "Memory");
+  // The bar colour follows macOS's memory pressure rather than % used:
+  // high usage is normal on macOS (spare RAM is used as cache).
+  std::string title = "Memory";
+  short barColor = 0;  // 0 = fall back to % used thresholds
+  switch (m.pressure) {
+    case MemPressure::Normal:   title += " · pressure normal";   barColor = kGreen;  break;
+    case MemPressure::Warning:  title += " · pressure warning";  barColor = kYellow; break;
+    case MemPressure::Critical: title += " · pressure critical"; barColor = kRed;    break;
+    case MemPressure::Unknown:  break;
+  }
+
+  drawBox(y, 0, kPanelHeight, w, title);
   int ix = 2, iw = w - 4;
   if (!m.ok || m.total == 0) { drawUnavailable(y + 1, ix); return; }
   double frac = static_cast<double>(m.used) / m.total;
-  drawInfoLine(y + 1, ix, iw, fmtBytes(m.used) + " used of " + fmtBytes(m.total),
-               fmtPercent(frac * 100));
-  drawChompBar(y + 2, ix, iw, frac);
+
+  std::string pct = fmtPercent(frac * 100);
+  std::string left = fmtBytes(m.used) + " used of " + fmtBytes(m.total);
+  std::string swap = m.swapUsed > 0 ? " · swap " + fmtBytes(m.swapUsed) : " · no swap";
+  // Add the swap part only if it fits whole; a half-cut "no s" reads badly
+  if (cols(left + swap) <= iw - cols(pct) - 1) left += swap;
+  drawInfoLine(y + 1, ix, iw, left, pct);
+  drawChompBar(y + 2, ix, iw, frac, barColor);
 }
 
 void drawDisk(int y, int w, const DiskInfo& d) {
@@ -157,7 +203,8 @@ void drawDisk(int y, int w, const DiskInfo& d) {
   drawChompBar(y + 2, ix, iw, frac);
 }
 
-void drawHeader(int w) {
+// " sysmon   load 1.45 1.39 1.42 · up 1d 3h            11:29:04"
+void drawHeader(int w, const SysInfo& sys) {
   attron(A_BOLD);
   color_on(kAccent);
   mvaddstr(0, 1, "sysmon");
@@ -167,7 +214,24 @@ void drawHeader(int w) {
   char clock[16];
   std::time_t now = std::time(nullptr);
   std::strftime(clock, sizeof(clock), "%H:%M:%S", std::localtime(&now));
-  mvaddstr(0, w - 1 - static_cast<int>(std::string(clock).size()), clock);
+  int clockX = w - 1 - cols(clock);
+  mvaddstr(0, clockX, clock);
+
+  if (!sys.ok) return;
+
+  // Show as much as fits between "sysmon" and the clock: everything, then
+  // just the load averages, then nothing.
+  char load[48];
+  std::snprintf(load, sizeof(load), "load %.2f %.2f %.2f", sys.load[0], sys.load[1], sys.load[2]);
+  const int startX = 1 + 6 + 3;            // after " sysmon" plus a gap
+  const int room = clockX - 2 - startX;    // keep a gap before the clock
+  for (const std::string& s : {std::string(load) + " · up " + fmtUptime(sys.uptimeSec),
+                               std::string(load)}) {
+    if (cols(s) <= room) {
+      mvaddstr(0, startX, s.c_str());
+      break;
+    }
+  }
 }
 
 void drawFooter(int y) {
@@ -231,7 +295,7 @@ void Ui::draw(const Snapshot& s) {
     return;
   }
 
-  drawHeader(w);
+  drawHeader(w, s.sys);
   int y = 1;
   drawCpu(y, w, s.cpu);       y += kPanelHeight;
   drawMemory(y, w, s.mem);    y += kPanelHeight;

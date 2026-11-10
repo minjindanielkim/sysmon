@@ -8,6 +8,7 @@ struct Snapshot {
   CpuInfo cpu{};
   MemInfo mem{};
   DiskInfo disk{};
+  SysInfo sys{};
 };
 
 // Collects a fresh Snapshot on each tick(). The main loop decides how often

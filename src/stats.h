@@ -11,10 +11,18 @@ struct DiskInfo {
   bool ok; // false if the system call has failed 
 };
 
+// macOS's own judgement of memory health (what Activity Monitor's
+// "Memory Pressure" graph shows). More meaningful than "% used", because
+// macOS deliberately fills spare RAM with cache.
+enum class MemPressure { Unknown, Normal, Warning, Critical };
+
 struct MemInfo {
   uint64_t total;
   uint64_t used;
   bool ok;
+  uint64_t swapTotal = 0;  // macOS grows swap on demand; 0 = no swap in use
+  uint64_t swapUsed = 0;
+  MemPressure pressure = MemPressure::Unknown;
 };
 
 struct CpuInfo {
@@ -22,6 +30,14 @@ struct CpuInfo {
     int cores;
     double usage;        // percent
     bool ok;
+    bool measured = false;  // false until two readings exist to compare
+};
+
+// System-wide figures for the header line.
+struct SysInfo {
+  double load[3];      // 1, 5 and 15 minute load averages
+  uint64_t uptimeSec;  // seconds since boot
+  bool ok;
 };
 
 
@@ -30,8 +46,9 @@ struct CpuInfo {
 // sample() call reports usage since the last call, with no sleeping.
 class CpuSampler {
 public:
-  CpuSampler();      // reads model + core count and takes the first reading
-  CpuInfo sample();  // usage since the previous call (0% on the very first)
+  CpuSampler();      // reads model + core count
+  CpuInfo sample();  // usage since the previous call; the first call only
+                     // records a baseline and returns measured = false
 
 private:
   static constexpr int kStates = 4;  // user, system, idle, nice
@@ -43,4 +60,5 @@ private:
 
 DiskInfo getDiskInfo(const std::string& path);
 MemInfo getMemInfo();
+SysInfo getSysInfo();
 

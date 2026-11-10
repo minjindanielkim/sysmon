@@ -2,6 +2,8 @@
 #include <sys/sysctl.h>
 #include <mach/mach.h>
 #include <algorithm>
+#include <cstdlib>
+#include <ctime>
 
 MemInfo getMemInfo() {
     // Total RAM (same as before)
@@ -30,7 +32,44 @@ MemInfo getMemInfo() {
     uint64_t compressedPages = vm.compressor_page_count;
 
     uint64_t used = (appPages + wiredPages + compressedPages) * pageSize;
-    return {total, used, true};
+    MemInfo mem{total, used, true};
+
+    // Swap: macOS creates swap files on demand, so total is often 0
+    xsw_usage swap{};
+    size = sizeof(swap);
+    if (sysctlbyname("vm.swapusage", &swap, &size, nullptr, 0) == 0) {
+        mem.swapTotal = swap.xsu_total;
+        mem.swapUsed  = swap.xsu_used;
+    }
+
+    // Kernel's memory pressure level: 1 = normal, 2 = warning, 4 = critical
+    int level = 0;
+    size = sizeof(level);
+    if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nullptr, 0) == 0) {
+        switch (level) {
+            case 1: mem.pressure = MemPressure::Normal;   break;
+            case 2: mem.pressure = MemPressure::Warning;  break;
+            case 4: mem.pressure = MemPressure::Critical; break;
+            default: break;  // leave Unknown
+        }
+    }
+    return mem;
+}
+
+SysInfo getSysInfo() {
+    SysInfo info{{0, 0, 0}, 0, false};
+
+    if (getloadavg(info.load, 3) != 3) return info;  // from <stdlib.h>
+
+    // Boot time; uptime = now - boot
+    timeval boot{};
+    size_t size = sizeof(boot);
+    if (sysctlbyname("kern.boottime", &boot, &size, nullptr, 0) != 0) return info;
+
+    std::time_t now = std::time(nullptr);
+    info.uptimeSec = now > boot.tv_sec ? static_cast<uint64_t>(now - boot.tv_sec) : 0;
+    info.ok = true;
+    return info;
 }
 
 // Reads the raw CPU tick counters (summed across all cores).
@@ -62,9 +101,6 @@ CpuSampler::CpuSampler() : model_("Unknown") {
     if (sysctlbyname("hw.logicalcpu", &cores, &size, nullptr, 0) == 0) {
         cores_ = cores;
     }
-
-    // Baseline reading, so the first sample() has something to compare to
-    havePrev_ = readCpuTicks(prevTicks_);
 }
 
 CpuInfo CpuSampler::sample() {
@@ -74,7 +110,8 @@ CpuInfo CpuSampler::sample() {
     if (!readCpuTicks(now)) return cpu;
 
     if (!havePrev_) {
-        // No baseline yet: store this one and report 0% for now
+        // First call: just record a baseline. Nothing to compare against
+        // yet, so measured stays false and the UI shows "--".
         std::copy(now, now + kStates, prevTicks_);
         havePrev_ = true;
         cpu.ok = true;
@@ -91,6 +128,9 @@ CpuInfo CpuSampler::sample() {
     uint64_t total = busy + d[CPU_STATE_IDLE];
 
     cpu.ok = true;
-    if (total > 0) cpu.usage = 100.0 * busy / total;  // else: no time passed, keep 0%
+    if (total > 0) {  // else no ticks elapsed: leave measured = false
+        cpu.usage = 100.0 * busy / total;
+        cpu.measured = true;
+    }
     return cpu;
 }

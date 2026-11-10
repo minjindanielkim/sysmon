@@ -8,4 +8,5 @@ void Sampler::tick() {
   latest_.cpu  = cpu_.sample();
   latest_.mem  = getMemInfo();
   latest_.disk = getDiskInfo(diskPath_);
+  latest_.sys  = getSysInfo();
 }
