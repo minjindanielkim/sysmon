@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <deque>
+#include <functional>
 #include <string>
 #include <strings.h>  // strcasecmp
 #include <vector>
@@ -27,6 +29,8 @@ constexpr int kNumBarPanels = 3;    // CPU, memory, disk
 // header + panels + footer
 constexpr int kMinHeight = 1 + kNumBarPanels * kPanelHeight + kNetPanelHeight + 1;
 constexpr int kMinProcPanel = 4;  // border, column header, one row, border
+constexpr int kMaxGraphRows = 8;
+constexpr int kGraphProcReserve = 8;  // graphs grow only while this many process-panel rows remain
 
 bool g_colors = false;
 
@@ -166,23 +170,99 @@ void drawChompBar(int y, int x, int w, double fraction, short color = 0) {
   mvaddch(y, x + 1 + inner, ']');
 }
 
+// Smallest round rate at or above `v` (1, 2, 5, 10, 20, 50 ... per unit),
+// used as the top of a network graph so the scale doesn't wobble every
+// update. Never below 1 KB/s, so background chatter stays small.
+double niceRate(double v, std::string& label) {
+  static const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s"};
+  static const int steps[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
+  v = std::max(v, 1024.0);
+  double base = 1;
+  for (int u = 0; u < 4; ++u, base *= 1024) {
+    for (int step : steps) {
+      if (step * base >= v || (u == 3 && step == 500)) {
+        label = std::to_string(step) + " " + units[u];
+        return step * base;
+      }
+    }
+  }
+  return v;  // not reached
+}
+
+// Area graph drawn with braille characters. Each character is a 2x4 grid of
+// dots, so a w x h area shows 2w samples (one per dot column) at 4h levels.
+// The newest sample is at the right edge; older ones scroll off the left.
+// Values are divided by `scale` and clamped to 0..1. With `fromTop` the
+// columns hang down from the top edge instead of rising from the bottom
+// (used for upload, mirrored under download). `rowColor` gets each row's
+// height above the baseline as a fraction, for gradients.
+void drawGraph(int y, int x, int w, int h, const std::deque<double>& values,
+               double scale, bool fromTop, const std::function<short(double)>& rowColor) {
+  // Braille dot bits, listed from the baseline outwards for each dot column
+  static const int up[2][4]   = {{0x40, 0x04, 0x02, 0x01}, {0x80, 0x20, 0x10, 0x08}};
+  static const int down[2][4] = {{0x01, 0x02, 0x04, 0x40}, {0x08, 0x10, 0x20, 0x80}};
+  const auto& bits = fromTop ? down : up;
+
+  // Dots lit per sample column; -1 where there's no data yet
+  const int samples = 2 * w;
+  const int n = static_cast<int>(values.size());
+  std::vector<int> level(samples, -1);
+  for (int i = 0; i < samples; ++i) {
+    int idx = n - samples + i;
+    if (idx < 0) continue;
+    double v = std::clamp(scale > 0 ? values[idx] / scale : 0.0, 0.0, 1.0);
+    int dots = static_cast<int>(std::lround(v * 4 * h));
+    if (v > 0 && dots == 0) dots = 1;  // a little activity shouldn't look like none
+    level[i] = dots;
+  }
+
+  for (int r = 0; r < h; ++r) {
+    int fromBase = fromTop ? r : h - 1 - r;  // rows between this one and the baseline
+    std::wstring line;
+    for (int c = 0; c < w; ++c) {
+      int cell = 0;
+      for (int side = 0; side < 2; ++side) {
+        int lit = std::clamp(level[2 * c + side] - fromBase * 4, 0, 4);
+        for (int d = 0; d < lit; ++d) cell |= bits[side][d];
+      }
+      // A plain space for empty cells: some fonts draw U+2800 as faint dots
+      line += cell ? static_cast<wchar_t>(0x2800 + cell) : L' ';
+    }
+    short color = rowColor((fromBase + 0.5) / h);
+    color_on(color);
+    mvaddwstr(y + r, x, line.c_str());
+    color_off(color);
+  }
+}
+
 void drawUnavailable(int y, int x) {
   color_on(kDim);
   mvaddstr(y, x, "unavailable");
   color_off(kDim);
 }
 
-void drawCpu(int y, int w, const CpuInfo& c) {
-  drawBox(y, 0, kPanelHeight, w, "CPU");
+// Height of the CPU and memory panels: a bar, or `graphRows` of graph
+int barPanelHeight(int graphRows) { return graphRows > 0 ? 3 + graphRows : kPanelHeight; }
+
+// The network panel's graph needs two rows at least (download above, upload below)
+int netGraphRows(int graphRows) { return graphRows > 0 ? std::max(2, graphRows) : 0; }
+int netPanelHeight(int graphRows) { return kNetPanelHeight + netGraphRows(graphRows); }
+
+void drawCpu(int y, int w, const CpuInfo& c, const std::deque<double>& history, int graphRows) {
+  drawBox(y, 0, barPanelHeight(graphRows), w, "CPU");
   int ix = 2, iw = w - 4;
   if (!c.ok) { drawUnavailable(y + 1, ix); return; }
   // Until a second reading exists there's no honest number to show
   drawInfoLine(y + 1, ix, iw, c.model + " · " + std::to_string(c.cores) + " cores",
                c.measured ? fmtPercent(c.usage) : "--");
-  drawChompBar(y + 2, ix, iw, c.measured ? c.usage / 100.0 : 0.0);
+  if (graphRows > 0) {
+    drawGraph(y + 2, ix, iw, graphRows, history, 1.0, false, levelColor);  // green → red going up
+  } else {
+    drawChompBar(y + 2, ix, iw, c.measured ? c.usage / 100.0 : 0.0);
+  }
 }
 
-void drawMemory(int y, int w, const MemInfo& m) {
+void drawMemory(int y, int w, const MemInfo& m, const std::deque<double>& history, int graphRows) {
   // The bar colour follows macOS's memory pressure rather than % used:
   // high usage is normal on macOS (spare RAM is used as cache).
   std::string title = "Memory";
@@ -194,7 +274,7 @@ void drawMemory(int y, int w, const MemInfo& m) {
     case MemPressure::Unknown:  break;
   }
 
-  drawBox(y, 0, kPanelHeight, w, title);
+  drawBox(y, 0, barPanelHeight(graphRows), w, title);
   int ix = 2, iw = w - 4;
   if (!m.ok || m.total == 0) { drawUnavailable(y + 1, ix); return; }
   double frac = static_cast<double>(m.used) / m.total;
@@ -205,7 +285,13 @@ void drawMemory(int y, int w, const MemInfo& m) {
   // Add the swap part only if it fits whole; a half-cut "no s" reads badly
   if (cols(left + swap) <= iw - cols(pct) - 1) left += swap;
   drawInfoLine(y + 1, ix, iw, left, pct);
-  drawChompBar(y + 2, ix, iw, frac, barColor);
+  if (graphRows > 0) {
+    // One colour for the whole graph: the current pressure, as for the bar
+    auto color = [&](double level) { return barColor ? barColor : levelColor(level); };
+    drawGraph(y + 2, ix, iw, graphRows, history, 1.0, false, color);
+  } else {
+    drawChompBar(y + 2, ix, iw, frac, barColor);
+  }
 }
 
 void drawDisk(int y, int w, const DiskInfo& d) {
@@ -221,10 +307,11 @@ void drawDisk(int y, int w, const DiskInfo& d) {
 // ┌─ Network · en0 ─────────────────────────────────────────────┐
 // │ ↓ 1.2 MB/s     ↑ 35.0 KB/s          total ↓ 7.0 GB ↑ 406.3 MB │
 // └─────────────────────────────────────────────────────────────┘
-void drawNetwork(int y, int w, const NetInfo& n) {
+void drawNetwork(int y, int w, const NetInfo& n, const History& history, int graphRows) {
   std::string title = "Network";
   for (size_t i = 0; i < n.names.size(); ++i) title += (i ? ", " : " · ") + n.names[i];
-  drawBox(y, 0, kNetPanelHeight, w, title);
+  const int h = netPanelHeight(graphRows);
+  drawBox(y, 0, h, w, title);
   int ix = 2, iw = w - 4;
   if (!n.ok) { drawUnavailable(y + 1, ix); return; }
 
@@ -254,6 +341,34 @@ void drawNetwork(int y, int w, const NetInfo& n) {
     color_on(kDim);
     mvaddstr(y + 1, ix + iw - cols(total), total.c_str());
     color_off(kDim);
+  }
+
+  const int rows = netGraphRows(graphRows);
+  if (rows == 0) return;
+
+  // Download rises above the midline, upload hangs below it. Each half has
+  // its own scale (upload is usually far smaller), sized to the largest
+  // value on screen and shown on the bottom border.
+  auto peak = [&](const std::deque<double>& d) {
+    size_t shown = std::min(d.size(), static_cast<size_t>(2 * iw));
+    return d.empty() ? 0.0 : *std::max_element(d.end() - shown, d.end());
+  };
+  std::string rxLabel, txLabel;
+  double rxScale = niceRate(peak(history.rx), rxLabel);
+  double txScale = niceRate(peak(history.tx), txLabel);
+  int rxRows = (rows + 1) / 2, txRows = rows - rxRows;
+  drawGraph(y + 2, ix, iw, rxRows, history.rx, rxScale, false, [](double) { return kGreen; });
+  drawGraph(y + 2 + rxRows, ix, iw, txRows, history.tx, txScale, true, [](double) { return kAccent; });
+
+  // " scale ↓ 5 KB/s ↑ 1 KB/s " on the bottom border, or a shorter form
+  for (std::string s : {" scale ↓ " + rxLabel + " ↑ " + txLabel + " ",
+                        " ↓ " + rxLabel + " ↑ " + txLabel + " "}) {
+    if (cols(s) <= w - 6) {
+      color_on(kDim);
+      mvaddstr(y + h - 1, w - 2 - cols(s), s.c_str());
+      color_off(kDim);
+      break;
+    }
   }
 }
 
@@ -419,17 +534,35 @@ int drawProcesses(int y, int h, int w, const ProcList& list, ViewState& v) {
   return rowsVisible;
 }
 
-// " q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll", or a shorter
-// form on narrow terminals (%g prints 0.25, 0.5, 1, 2 without noise).
+// " q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll · g graphs", or a
+// shorter form on narrower terminals (%g prints 0.25, 0.5, 1, 2 without noise).
 void drawFooter(int y, int w, double interval) {
-  char full[96], brief[64];
+  char full[96], mid[96], brief[64];
   std::snprintf(full, sizeof(full),
-                "q quit · +/- interval %gs · c/m/p/n sort · ↑↓ scroll", interval);
-  std::snprintf(brief, sizeof(brief), "q · +/- %gs · c/m/p/n · ↑↓", interval);
-  std::string text = cols(full) <= w - 2 ? full : fit(brief, w - 2);
+                "q quit · +/- interval %gs · c/m/p/n sort · ↑↓ scroll · g graphs", interval);
+  std::snprintf(mid, sizeof(mid), "q quit · +/- %gs · c/m/p/n sort · ↑↓ scroll · g graphs", interval);
+  std::snprintf(brief, sizeof(brief), "q · +/- %gs · c/m/p/n · ↑↓ · g", interval);
+  std::string text = fit(brief, w - 2);
+  for (const char* t : {full, mid}) {
+    if (cols(t) <= w - 2) { text = t; break; }
+  }
   color_on(kDim);
   mvaddstr(y, 1, text.c_str());
   color_off(kDim);
+}
+
+// Graph rows for the CPU and memory panels (the network graph uses at least
+// 2) on a screen `h` rows tall: as tall as possible, up to kMaxGraphRows,
+// while leaving the process list room to stay useful. Returns 0, meaning
+// show bars after all, if not even one-row graphs fit.
+int graphRows(int h) {
+  auto used = [](int rows) {
+    return 1 + 2 * barPanelHeight(rows) + kPanelHeight + netPanelHeight(rows) + 1;
+  };
+  for (int rows = kMaxGraphRows; rows >= 1; --rows) {
+    if (h - used(rows) >= kGraphProcReserve) return rows;
+  }
+  return used(1) <= h ? 1 : 0;
 }
 
 void drawTooSmall(int h, int w) {
@@ -480,6 +613,7 @@ Ui::Key Ui::readKey() {
     case 'm': case 'M': return Key::SortMem;
     case 'p': case 'P': return Key::SortPid;
     case 'n': case 'N': return Key::SortName;
+    case 'g': case 'G': return Key::ToggleGraphs;
     case KEY_UP:     return Key::Up;
     case KEY_DOWN:   return Key::Down;
     case KEY_PPAGE:  return Key::PageUp;
@@ -502,11 +636,13 @@ void Ui::draw(const Snapshot& s, ViewState& view) {
   }
 
   drawHeader(w, s.sys);
+  const History& hist = s.history;
+  int g = view.graphs ? graphRows(h) : 0;
   int y = 1;
-  drawCpu(y, w, s.cpu);       y += kPanelHeight;
-  drawMemory(y, w, s.mem);    y += kPanelHeight;
-  drawDisk(y, w, s.disk);     y += kPanelHeight;
-  drawNetwork(y, w, s.net);   y += kNetPanelHeight;
+  drawCpu(y, w, s.cpu, hist.cpu, g);     y += barPanelHeight(g);
+  drawMemory(y, w, s.mem, hist.mem, g);  y += barPanelHeight(g);
+  drawDisk(y, w, s.disk);                y += kPanelHeight;
+  drawNetwork(y, w, s.net, hist, g);     y += netPanelHeight(g);
 
   // The process panel takes the rest of the screen above the footer, if
   // there's room for at least one row; otherwise it's left out.

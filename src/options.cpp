@@ -72,6 +72,9 @@ bool parseArgs(int argc, char** argv, Options& out, std::string& error) {
       if (!takeValue(v)) return false;
       if (v.empty()) { error = "disk path is empty"; return false; }
       out.disk = v;
+    } else if (arg == "-g" || arg == "--graphs") {
+      if (hasInline) { error = "option '--graphs' takes no value"; return false; }
+      out.graphs = true;
     } else if (arg == "--no-color") {
       if (hasInline) { error = "option '--no-color' takes no value"; return false; }
       out.color = false;
@@ -87,7 +90,7 @@ const char* helpText() {
   return
       "Usage: sysmon [options]\n"
       "\n"
-      "Live terminal dashboard for CPU, memory and disk usage.\n"
+      "Live terminal dashboard for CPU, memory, disk, network and processes.\n"
       "\n"
       "Options:\n"
       "  -i, --interval SECONDS  time between updates (default 1, range 0.25-60)\n"
@@ -97,12 +100,16 @@ const char* helpText() {
 #else
       "                          (default /)\n"
 #endif
+      "  -g, --graphs            start with graphs instead of bars\n"
       "      --no-color          disable colours (so does setting NO_COLOR)\n"
       "  -h, --help              show this help and exit\n"
       "\n"
       "Keys:\n"
-      "  q      quit\n"
-      "  + / -  lengthen / shorten the update interval\n";
+      "  q          quit\n"
+      "  + / -      lengthen / shorten the update interval\n"
+      "  g          switch between bars and graphs\n"
+      "  c m p n    sort processes by CPU, memory, PID or name (again to reverse)\n"
+      "  arrows, PgUp/PgDn, Home/End   scroll the process list\n";
 }
 
 double stepInterval(double current, int direction) {

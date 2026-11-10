@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
   };
   ViewState view;
   view.interval = opts.interval;
+  view.graphs = opts.graphs;
 
   Sampler sampler(opts.disk);
   sampler.tick();
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
       case Ui::Key::PageDown: view.scroll += ui.pageRows(); break;
       case Ui::Key::Home:     view.scroll = 0; break;
       case Ui::Key::End:      view.scroll = 1 << 30; break;
+      case Ui::Key::ToggleGraphs: view.graphs = !view.graphs; break;
       default: break;
     }
 

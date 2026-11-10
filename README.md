@@ -26,7 +26,7 @@ macOS, written in C++17 with ncurses.
 │  26119    1.4  610.4 MB   27  Claude Helper (Renderer)       │
 │  21565    0.3  283.6 MB   22  Microsoft Outlook              │
 └───────────────────────────────────────────────── 1-3 of 733 ─┘
- q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll
+ q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll · g graphs
 ```
 
 - **CPU:** model, core count and overall usage
@@ -42,6 +42,31 @@ macOS, written in C++17 with ncurses.
 
 The bars are drawn in the style of pacman's `ILoveCandy` option: Pac-Man
 eats the pellets as usage rises.
+
+## Graphs
+
+Press `g` (or start with `--graphs`) to swap the CPU and memory bars for
+graphs of recent history, and to add one to the network panel. They are
+drawn with braille characters, so each character cell holds two samples
+and four levels:
+
+```
+┌─ Network · en0 ──────────────────────┐
+│ ↓ 67.0 KB/s    ↑ 2.8 KB/s            │
+│ ⣀⣀⣀⣤⣄⣀⣄⣠⣀⣀⣀⣄⣀⣀⣄⣀⣀⣄⣄⣀⣀⣀⣀⣀⣄⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ │
+│ ⠉⠉⠈⠘⠁⠉⠁⠈⠈⠉⠈⠁⠈⠉⠉⠉ ⠉⠉⠉⠉⠉⠙⠈⠁⠁⠁⠋⠉⠉⠉⠉⠉⠉⠉⠈ │
+└──────── scale ↓ 500 KB/s ↑ 200 KB/s ─┘
+```
+
+- The newest sample is at the right; one sample is taken per update, so
+  the time a graph covers depends on the interval.
+- CPU shades from green to red going up. Memory uses its pressure colour.
+- Network shows download above the midline and upload below it. Each half
+  scales to the largest value on screen, rounded up, and the scale is
+  shown on the panel's bottom border.
+- Graphs grow taller (up to 8 rows) on taller terminals while leaving room
+  for the process list. If the terminal is too short for them, the bars
+  stay.
 
 ## Requirements
 
@@ -75,6 +100,7 @@ This puts `sysmon` in `~/.local/bin`; make sure that directory is on your
 | --- | --- |
 | `-i`, `--interval SECONDS` | Time between updates. Default 1, range 0.25–60. |
 | `-d`, `--disk PATH` | Volume to show disk usage for. Default `/System/Volumes/Data`. |
+| `-g`, `--graphs` | Start with graphs instead of bars. |
 | `--no-color` | Disable colours. Setting the `NO_COLOR` environment variable does the same. |
 | `-h`, `--help` | Show help and exit. |
 
@@ -86,6 +112,7 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | --- | --- |
 | `q` | Quit (Ctrl-C also works) |
 | `+` / `-` | Lengthen / shorten the update interval |
+| `g` | Switch between bars and graphs |
 | `c` `m` `p` `n` | Sort processes by CPU, memory, PID or name (press again to reverse) |
 | `↑` `↓` | Scroll the process list one row |
 | `PgUp` `PgDn` | Scroll one page |
@@ -122,7 +149,7 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | `src/stats_posix.cpp` | Disk usage (portable) |
 | `src/net.h`, `src/net_macos.cpp` | Network rates and totals via the interface MIB |
 | `src/proc.h`, `src/proc_macos.cpp` | Process list via libproc, per-process CPU % |
-| `src/sampler.*` | Collects one snapshot of everything per update |
+| `src/sampler.*` | Collects one snapshot of everything per update, plus graph history |
 | `src/options.*` | Command-line parsing and interval steps |
 | `src/ui.*` | All ncurses drawing |
 | `src/main.cpp` | Main loop: draw, read keys, sample |

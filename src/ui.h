@@ -11,6 +11,7 @@ struct ViewState {
   SortKey sort = SortKey::Cpu;
   bool descending = true;
   int scroll = 0;               // first visible row of the process table
+  bool graphs = false;          // graphs instead of bars for CPU and memory
 };
 
 // Owns the ncurses screen. Constructing it switches the terminal into
@@ -22,7 +23,7 @@ public:
   enum class Key {
     None, Quit, Longer, Shorter, Resize, Other,
     SortCpu, SortMem, SortPid, SortName,
-    Up, Down, PageUp, PageDown, Home, End,
+    Up, Down, PageUp, PageDown, Home, End, ToggleGraphs,
   };
 
   explicit Ui(bool useColor);

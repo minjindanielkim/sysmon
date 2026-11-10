@@ -7,6 +7,7 @@ struct Options {
   double interval = 1.0;  // seconds between samples
   std::string disk;       // volume to report; set to the platform default
   bool color = true;
+  bool graphs = false;    // start with graphs instead of bars
   bool help = false;
 };
 
