@@ -8,9 +8,9 @@
 // macros (erase, clear, move, ...) can't collide with the rest of the code.
 class Ui {
 public:
-  enum class Key { None, Quit, Resize, Other };
+  enum class Key { None, Quit, Longer, Shorter, Resize, Other };
 
-  Ui();
+  explicit Ui(bool useColor);
   ~Ui();
   Ui(const Ui&) = delete;
   Ui& operator=(const Ui&) = delete;
@@ -18,6 +18,7 @@ public:
   // Waits up to ~100 ms for a key press. Returns Key::None if nothing came.
   Key readKey();
 
-  // Redraws the whole screen from the given snapshot.
-  void draw(const Snapshot& s);
+  // Redraws the whole screen from the given snapshot; `interval` (seconds)
+  // is shown in the footer.
+  void draw(const Snapshot& s, double interval);
 };

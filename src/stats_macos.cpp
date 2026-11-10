@@ -122,15 +122,23 @@ CpuInfo CpuSampler::sample() {
     // Subtracting in uint32_t arithmetic gives the right difference anyway.
     uint32_t d[kStates];
     for (int i = 0; i < kStates; ++i) d[i] = now[i] - prevTicks_[i];
-    std::copy(now, now + kStates, prevTicks_);
 
     uint64_t busy  = uint64_t(d[CPU_STATE_USER]) + d[CPU_STATE_SYSTEM] + d[CPU_STATE_NICE];
     uint64_t total = busy + d[CPU_STATE_IDLE];
 
-    cpu.ok = true;
-    if (total > 0) {  // else no ticks elapsed: leave measured = false
-        cpu.usage = 100.0 * busy / total;
-        cpu.measured = true;
+    // macOS doesn't update these counters continuously: they can stay frozen
+    // for ~0.75 s and then jump. With a short interval, a sample can land in
+    // that gap and see no change. Keep showing the previous result (and keep
+    // the old baseline) rather than flickering to "--" or 0%.
+    if (total == 0) {
+        last_.ok = true;
+        return last_;
     }
+
+    std::copy(now, now + kStates, prevTicks_);
+    cpu.ok = true;
+    cpu.usage = 100.0 * busy / total;
+    cpu.measured = true;
+    last_ = cpu;
     return cpu;
 }

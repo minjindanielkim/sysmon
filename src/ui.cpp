@@ -234,9 +234,12 @@ void drawHeader(int w, const SysInfo& sys) {
   }
 }
 
-void drawFooter(int y) {
+// " q quit · +/- interval 1s"  (%g prints 0.25, 0.5, 1, 2 without noise)
+void drawFooter(int y, double interval) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "q quit · +/- interval %gs", interval);
   color_on(kDim);
-  mvaddstr(y, 1, "q quit · updates every 1s");
+  mvaddstr(y, 1, buf);
   color_off(kDim);
 }
 
@@ -251,7 +254,7 @@ void drawTooSmall(int h, int w) {
 
 }  // namespace
 
-Ui::Ui() {
+Ui::Ui(bool useColor) {
   std::setlocale(LC_ALL, "");  // enables UTF-8 output; must precede initscr
   initscr();
   cbreak();              // keys arrive immediately; Ctrl-C still sends SIGINT
@@ -260,7 +263,7 @@ Ui::Ui() {
   curs_set(0);
   timeout(100);          // getch waits at most 100 ms
 
-  if (has_colors()) {
+  if (useColor && has_colors()) {
     start_color();
     use_default_colors();  // -1 = keep the terminal's own background
     init_pair(kGreen, COLOR_GREEN, -1);
@@ -280,12 +283,16 @@ Ui::Key Ui::readKey() {
     case ERR:        return Key::None;
     case 'q':
     case 'Q':        return Key::Quit;
+    case '+':
+    case '=':        return Key::Longer;   // '=' is unshifted '+' on US keyboards
+    case '-':
+    case '_':        return Key::Shorter;
     case KEY_RESIZE: return Key::Resize;
     default:         return Key::Other;
   }
 }
 
-void Ui::draw(const Snapshot& s) {
+void Ui::draw(const Snapshot& s, double interval) {
   erase();  // not clear(): erase lets ncurses send only what changed (no flicker)
 
   int h = LINES, w = COLS;
@@ -300,7 +307,7 @@ void Ui::draw(const Snapshot& s) {
   drawCpu(y, w, s.cpu);       y += kPanelHeight;
   drawMemory(y, w, s.mem);    y += kPanelHeight;
   drawDisk(y, w, s.disk);
-  drawFooter(h - 1);
+  drawFooter(h - 1, interval);
 
   refresh();
 }

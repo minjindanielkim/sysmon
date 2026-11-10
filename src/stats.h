@@ -56,6 +56,7 @@ private:
   int cores_ = 0;
   uint32_t prevTicks_[kStates] = {};
   bool havePrev_ = false;
+  CpuInfo last_{};  // returned again when the counters haven't moved
 };
 
 DiskInfo getDiskInfo(const std::string& path);
