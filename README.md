@@ -1,7 +1,7 @@
 # sysmon
 
-A live terminal dashboard for CPU, memory and disk usage on macOS, written in
-C++17 with ncurses.
+A live terminal dashboard for CPU, memory, disk and processes on macOS,
+written in C++17 with ncurses.
 
 ```
  sysmon   load 1.91 1.54 1.47 · up 1d 3h               11:30:22
@@ -17,7 +17,13 @@ C++17 with ncurses.
 │ 228.1 GB used of 460.4 GB                              49.6% │
 │ [-----------------------------C o  o  o  o  o  o  o  o  o  ] │
 └──────────────────────────────────────────────────────────────┘
- q quit · +/- interval 1s
+┌─ Processes · 733 (423 readable) · sort: CPU ▼ ───────────────┐
+│    PID   CPU%       MEM  THR  NAME                           │
+│  27461   99.8  832.2 KB    1  yes                            │
+│  26119    1.4  610.4 MB   27  Claude Helper (Renderer)       │
+│  21565    0.3  283.6 MB   22  Microsoft Outlook              │
+└───────────────────────────────────────────────── 1-3 of 733 ─┘
+ q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll
 ```
 
 - **CPU:** model, core count and overall usage
@@ -25,6 +31,8 @@ C++17 with ncurses.
   colour follows pressure rather than percentage, since macOS deliberately
   fills spare RAM with cache.
 - **Disk:** used vs total for one volume
+- **Processes:** every running process with its CPU %, memory and thread
+  count, sortable and scrollable (see below)
 - **Header:** 1/5/15-minute load averages, uptime and the time
 
 The bars are drawn in the style of pacman's `ILoveCandy` option: Pac-Man
@@ -73,6 +81,23 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | --- | --- |
 | `q` | Quit (Ctrl-C also works) |
 | `+` / `-` | Lengthen / shorten the update interval |
+| `c` `m` `p` `n` | Sort processes by CPU, memory, PID or name (press again to reverse) |
+| `↑` `↓` | Scroll the process list one row |
+| `PgUp` `PgDn` | Scroll one page |
+| `Home` `End` | Jump to the top / bottom |
+
+## About the process list
+
+- **CPU %** is per core, as in `top` and Activity Monitor, so a busy
+  multi-threaded app can show more than 100%. A process that has only just
+  started shows `--` until the next update.
+- **MEM** is the memory footprint, the same figure as Activity Monitor's
+  Memory column. It differs from the resident size (RSS) that `ps` and `top`
+  show.
+- **Other users' processes** (root, system services such as WindowServer)
+  can only be listed by name and owner unless sysmon runs as root, so they
+  appear dimmed with `-` and stay at the bottom of the list. Run
+  `sudo sysmon` to see their figures too.
 
 ## Project layout
 
@@ -81,6 +106,7 @@ Example: `sysmon --interval 2 --disk /Volumes/External`
 | `src/stats.h` | Data structures and the functions that read system stats |
 | `src/stats_macos.cpp` | CPU, memory, swap, pressure, load and uptime on macOS |
 | `src/stats_posix.cpp` | Disk usage (portable) |
+| `src/proc.h`, `src/proc_macos.cpp` | Process list via libproc, per-process CPU % |
 | `src/sampler.*` | Collects one snapshot of everything per update |
 | `src/options.*` | Command-line parsing and interval steps |
 | `src/ui.*` | All ncurses drawing |

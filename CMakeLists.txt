@@ -19,7 +19,7 @@ add_executable(sysmon
     src/stats_posix.cpp
 )
 if(APPLE)
-    target_sources(sysmon PRIVATE src/stats_macos.cpp)
+    target_sources(sysmon PRIVATE src/stats_macos.cpp src/proc_macos.cpp)
 endif()
 
 target_include_directories(sysmon PRIVATE ${CURSES_INCLUDE_DIRS})

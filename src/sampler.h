@@ -1,5 +1,6 @@
 #pragma once
 
+#include "proc.h"
 #include "stats.h"
 #include <string>
 
@@ -9,6 +10,7 @@ struct Snapshot {
   MemInfo mem{};
   DiskInfo disk{};
   SysInfo sys{};
+  ProcList procs{};
 };
 
 // Collects a fresh Snapshot on each tick(). The main loop decides how often
@@ -22,6 +24,7 @@ public:
 
 private:
   CpuSampler cpu_;
+  ProcSampler proc_;
   std::string diskPath_;
   Snapshot latest_;
 };

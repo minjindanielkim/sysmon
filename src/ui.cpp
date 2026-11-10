@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <ctime>
 #include <string>
+#include <strings.h>  // strcasecmp
+#include <vector>
 
 // Wide-character ncurses API (needed for █ ▏ ░ etc.). Must come before
 // curses.h, and curses.h comes last because it defines short macros.
@@ -22,6 +24,7 @@ constexpr int kMinWidth = 40;
 constexpr int kPanelHeight = 4;  // border, info line, bar line, border
 constexpr int kNumPanels = 3;
 constexpr int kMinHeight = 1 + kNumPanels * kPanelHeight + 1;  // header + panels + footer
+constexpr int kMinProcPanel = 4;  // border, column header, one row, border
 
 bool g_colors = false;
 
@@ -234,12 +237,147 @@ void drawHeader(int w, const SysInfo& sys) {
   }
 }
 
-// " q quit · +/- interval 1s"  (%g prints 0.25, 0.5, 1, 2 without noise)
-void drawFooter(int y, double interval) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "q quit · +/- interval %gs", interval);
+// ---- Process table ---------------------------------------------------------
+
+const char* sortName(SortKey k) {
+  switch (k) {
+    case SortKey::Cpu:  return "CPU";
+    case SortKey::Mem:  return "memory";
+    case SortKey::Pid:  return "PID";
+    case SortKey::Name: return "name";
+  }
+  return "";
+}
+
+// Processes in display order. Readable processes come first, sorted by the
+// chosen key; unreadable ones (no CPU/memory without sudo) always go last,
+// since sorting blanks against numbers would scatter them through the list.
+// Ties fall back to PID so rows don't jump around between frames.
+std::vector<const ProcInfo*> sortedProcs(const ProcList& list, const ViewState& v) {
+  std::vector<const ProcInfo*> rows;
+  rows.reserve(list.procs.size());
+  for (const ProcInfo& p : list.procs) rows.push_back(&p);
+
+  auto cmp3 = [](auto x, auto y) { return (x < y) ? -1 : (x > y) ? 1 : 0; };
+
+  auto less = [&](const ProcInfo* a, const ProcInfo* b) {
+    if (a->readable != b->readable) return a->readable;  // readable first, always
+
+    SortKey key = v.sort;
+    bool desc = v.descending;
+    // Unreadable rows have no CPU/memory figures, so sort those by name A→Z
+    if (!a->readable && (key == SortKey::Cpu || key == SortKey::Mem)) {
+      key = SortKey::Name;
+      desc = false;
+    }
+
+    int c = 0;  // ascending three-way comparison
+    switch (key) {
+      case SortKey::Cpu:  c = cmp3(a->cpu, b->cpu); break;
+      case SortKey::Mem:  c = cmp3(a->mem, b->mem); break;
+      case SortKey::Pid:  c = cmp3(a->pid, b->pid); break;
+      case SortKey::Name: c = strcasecmp(a->name.c_str(), b->name.c_str()); break;
+    }
+    if (c != 0) return desc ? c > 0 : c < 0;
+    return a->pid < b->pid;
+  };
+  std::sort(rows.begin(), rows.end(), less);
+  return rows;
+}
+
+// Which optional columns fit. NAME takes whatever is left.
+struct Columns {
+  bool user, threads;
+};
+Columns columnsFor(int width) {
+  return {width >= 62, width >= 52};
+}
+
+// One table line, header or row, laid out to the same column widths:
+//   "  PID USER        CPU%       MEM  THR  NAME"
+std::string tableLine(const Columns& c, int width, const std::string& pid,
+                      const std::string& user, const std::string& cpu,
+                      const std::string& mem, const std::string& thr,
+                      const std::string& name) {
+  char buf[128];
+  std::string line;
+  std::snprintf(buf, sizeof(buf), "%6s ", pid.c_str());               line += buf;
+  if (c.user) { std::snprintf(buf, sizeof(buf), "%-10s ", fit(user, 10).c_str()); line += buf; }
+  std::snprintf(buf, sizeof(buf), "%6s %9s ", cpu.c_str(), mem.c_str()); line += buf;
+  if (c.threads) { std::snprintf(buf, sizeof(buf), "%4s ", thr.c_str()); line += buf; }
+  line += " ";
+  line += fit(name, width - cols(line));
+  return line;
+}
+
+std::string fmtCpu(const ProcInfo& p) {
+  if (!p.readable) return "-";
+  if (!p.measured) return "--";
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), p.cpu < 1000 ? "%.1f" : "%.0f", p.cpu);
+  return buf;
+}
+
+// Draws the process panel in rows [y, y+h). Returns how many process rows
+// fit, so the caller can clamp scrolling and size PgUp/PgDn.
+int drawProcesses(int y, int h, int w, const ProcList& list, ViewState& v) {
+  // Longest title that fits: full, then without the readable count, then bare
+  const char* arrow = v.descending ? "▼" : "▲";
+  char full[96], mid[64];
+  std::snprintf(full, sizeof(full), "Processes · %zu (%d readable) · sort: %s %s",
+                list.procs.size(), list.readable, sortName(v.sort), arrow);
+  std::snprintf(mid, sizeof(mid), "Processes · %zu · %s %s",
+                list.procs.size(), sortName(v.sort), arrow);
+  std::string title = "Processes";
+  for (const char* t : {full, mid}) {
+    if (cols(t) + 2 <= w - 4) { title = t; break; }  // +2: spaces around the title
+  }
+  drawBox(y, 0, h, w, title);
+  int ix = 2, iw = w - 4;
+  int rowsVisible = h - 3;  // minus top border, column header, bottom border
+
+  if (!list.ok) { drawUnavailable(y + 1, ix); return rowsVisible; }
+
+  Columns c = columnsFor(iw);
+  attron(A_BOLD);
+  mvaddstr(y + 1, ix, tableLine(c, iw, "PID", "USER", "CPU%", "MEM", "THR", "NAME").c_str());
+  attroff(A_BOLD);
+
+  std::vector<const ProcInfo*> rows = sortedProcs(list, v);
+  int total = static_cast<int>(rows.size());
+  v.scroll = std::clamp(v.scroll, 0, std::max(0, total - rowsVisible));
+
+  for (int i = 0; i < rowsVisible && v.scroll + i < total; ++i) {
+    const ProcInfo& p = *rows[v.scroll + i];
+    std::string line = tableLine(c, iw, std::to_string(p.pid), p.user, fmtCpu(p),
+                                 p.readable ? fmtBytes(p.mem) : "-",
+                                 p.readable ? std::to_string(p.threads) : "-", p.name);
+    if (!p.readable) color_on(kDim);
+    mvaddstr(y + 2 + i, ix, line.c_str());
+    if (!p.readable) color_off(kDim);
+  }
+
+  // Position on the bottom border: " 1-20 of 727 "
+  if (total > 0) {
+    char pos[48];
+    int last = std::min(total, v.scroll + rowsVisible);
+    std::snprintf(pos, sizeof(pos), " %d-%d of %d ", v.scroll + 1, last, total);
+    int px = w - 2 - cols(pos);
+    if (px > 2) mvaddstr(y + h - 1, px, pos);
+  }
+  return rowsVisible;
+}
+
+// " q quit · +/- interval 1s · c/m/p/n sort · ↑↓ scroll", or a shorter
+// form on narrow terminals (%g prints 0.25, 0.5, 1, 2 without noise).
+void drawFooter(int y, int w, double interval) {
+  char full[96], brief[64];
+  std::snprintf(full, sizeof(full),
+                "q quit · +/- interval %gs · c/m/p/n sort · ↑↓ scroll", interval);
+  std::snprintf(brief, sizeof(brief), "q · +/- %gs · c/m/p/n · ↑↓", interval);
+  std::string text = cols(full) <= w - 2 ? full : fit(brief, w - 2);
   color_on(kDim);
-  mvaddstr(y, 1, buf);
+  mvaddstr(y, 1, text.c_str());
   color_off(kDim);
 }
 
@@ -287,12 +425,22 @@ Ui::Key Ui::readKey() {
     case '=':        return Key::Longer;   // '=' is unshifted '+' on US keyboards
     case '-':
     case '_':        return Key::Shorter;
+    case 'c': case 'C': return Key::SortCpu;
+    case 'm': case 'M': return Key::SortMem;
+    case 'p': case 'P': return Key::SortPid;
+    case 'n': case 'N': return Key::SortName;
+    case KEY_UP:     return Key::Up;
+    case KEY_DOWN:   return Key::Down;
+    case KEY_PPAGE:  return Key::PageUp;
+    case KEY_NPAGE:  return Key::PageDown;
+    case KEY_HOME:   return Key::Home;
+    case KEY_END:    return Key::End;
     case KEY_RESIZE: return Key::Resize;
     default:         return Key::Other;
   }
 }
 
-void Ui::draw(const Snapshot& s, double interval) {
+void Ui::draw(const Snapshot& s, ViewState& view) {
   erase();  // not clear(): erase lets ncurses send only what changed (no flicker)
 
   int h = LINES, w = COLS;
@@ -306,8 +454,15 @@ void Ui::draw(const Snapshot& s, double interval) {
   int y = 1;
   drawCpu(y, w, s.cpu);       y += kPanelHeight;
   drawMemory(y, w, s.mem);    y += kPanelHeight;
-  drawDisk(y, w, s.disk);
-  drawFooter(h - 1, interval);
+  drawDisk(y, w, s.disk);     y += kPanelHeight;
+
+  // The process panel takes the rest of the screen above the footer, if
+  // there's room for at least one row; otherwise it's left out.
+  int procHeight = (h - 1) - y;
+  if (procHeight >= kMinProcPanel) {
+    pageRows_ = std::max(1, drawProcesses(y, procHeight, w, s.procs, view));
+  }
+  drawFooter(h - 1, w, view.interval);
 
   refresh();
 }
