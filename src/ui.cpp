@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <algorithm>
+#include <chrono>
 #include <clocale>
 #include <cmath>
 #include <cstdio>
@@ -80,27 +81,45 @@ void drawInfoLine(int y, int x, int w, std::string left, const std::string& righ
   attroff(A_BOLD);
 }
 
-// Horizontal bar using eighth-blocks for a smooth end: ████▌░░░░
-void drawBar(int y, int x, int w, double fraction) {
-  static const wchar_t* partials[] = {L"", L"▏", L"▎", L"▍", L"▌", L"▋", L"▊", L"▉"};
+// Pac-Man's mouth opens and closes every 250 ms. Based on wall-clock time,
+// so it animates even when a value (like disk usage) isn't changing.
+bool mouthOpen() {
+  using namespace std::chrono;
+  auto ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+  return (ms / 250) % 2 == 0;
+}
 
+// Progress bar in the style of pacman's ILoveCandy option (on by default in
+// CachyOS): Pac-Man eats a row of pellets, leaving a trail of dashes.
+//   [-------------C  o  o  o  o ]
+// The trail is coloured by level (green / yellow / red); Pac-Man is bold yellow.
+void drawChompBar(int y, int x, int w, double fraction) {
+  int inner = w - 2;  // space between the brackets
   fraction = std::clamp(fraction, 0.0, 1.0);
-  int eighths = static_cast<int>(std::lround(fraction * w * 8));
-  int full = eighths / 8;
-  int part = eighths % 8;
+  int eaten = static_cast<int>(std::lround(fraction * inner));
 
-  std::wstring filled(full, L'█');
-  filled += partials[part];
-  int used = full + (part ? 1 : 0);
+  mvaddch(y, x, '[');
 
   short c = levelColor(fraction);
   color_on(c);
-  mvaddwstr(y, x, filled.c_str());
+  mvaddstr(y, x + 1, std::string(eaten, '-').c_str());
   color_off(c);
 
-  color_on(kDim);
-  mvaddwstr(y, x + used, std::wstring(w - used, L'░').c_str());
-  color_off(kDim);
+  if (eaten < inner) {  // at 100% the trail fills the bar, like pacman's
+    attron(A_BOLD);
+    color_on(kYellow);
+    mvaddch(y, x + 1 + eaten, mouthOpen() ? 'C' : 'c');
+    color_off(kYellow);
+    attroff(A_BOLD);
+
+    // Pellets sit at fixed columns (every third, counted from the right end
+    // as pacman does), so Pac-Man visibly eats them as the value rises.
+    for (int col = eaten + 1; col < inner; ++col) {
+      mvaddch(y, x + 1 + col, (inner - col) % 3 == 0 ? 'o' : ' ');
+    }
+  }
+
+  mvaddch(y, x + 1 + inner, ']');
 }
 
 void drawUnavailable(int y, int x) {
@@ -115,7 +134,7 @@ void drawCpu(int y, int w, const CpuInfo& c) {
   if (!c.ok) { drawUnavailable(y + 1, ix); return; }
   drawInfoLine(y + 1, ix, iw, c.model + " · " + std::to_string(c.cores) + " cores",
                fmtPercent(c.usage));
-  drawBar(y + 2, ix, iw, c.usage / 100.0);
+  drawChompBar(y + 2, ix, iw, c.usage / 100.0);
 }
 
 void drawMemory(int y, int w, const MemInfo& m) {
@@ -125,7 +144,7 @@ void drawMemory(int y, int w, const MemInfo& m) {
   double frac = static_cast<double>(m.used) / m.total;
   drawInfoLine(y + 1, ix, iw, fmtBytes(m.used) + " used of " + fmtBytes(m.total),
                fmtPercent(frac * 100));
-  drawBar(y + 2, ix, iw, frac);
+  drawChompBar(y + 2, ix, iw, frac);
 }
 
 void drawDisk(int y, int w, const DiskInfo& d) {
@@ -135,7 +154,7 @@ void drawDisk(int y, int w, const DiskInfo& d) {
   double frac = static_cast<double>(d.used) / d.total;
   drawInfoLine(y + 1, ix, iw, fmtBytes(d.used) + " used of " + fmtBytes(d.total),
                fmtPercent(frac * 100));
-  drawBar(y + 2, ix, iw, frac);
+  drawChompBar(y + 2, ix, iw, frac);
 }
 
 void drawHeader(int w) {
