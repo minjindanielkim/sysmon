@@ -40,7 +40,6 @@ struct SysInfo {
   bool ok;
 };
 
-
 // CPU usage is a rate (busy ticks / total ticks over some interval), so it
 // needs two readings. CpuSampler remembers the previous reading, and each
 // sample() call reports usage since the last call, with no sleeping.
@@ -51,10 +50,15 @@ public:
                      // records a baseline and returns measured = false
 
 private:
-  static constexpr int kStates = 4;  // user, system, idle, nice
   std::string model_;
   int cores_ = 0;
-  uint32_t prevTicks_[kStates] = {};
+#ifdef __APPLE__
+  static constexpr int kStates = 4;   // user, system, idle, nice
+  uint32_t prevTicks_[kStates] = {};  // 32-bit kernel counters, diffed per state
+#else
+  uint64_t prevBusy_ = 0;             // /proc/stat counters are 64-bit
+  uint64_t prevTotal_ = 0;
+#endif
   bool havePrev_ = false;
   CpuInfo last_{};  // returned again when the counters haven't moved
 };
@@ -62,4 +66,3 @@ private:
 DiskInfo getDiskInfo(const std::string& path);
 MemInfo getMemInfo();
 SysInfo getSysInfo();
-

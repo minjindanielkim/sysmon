@@ -1,0 +1,7 @@
+/home/danielk/sysmon/bulid/CMakeFiles/sysmon.dir
+/home/danielk/sysmon/bulid/CMakeFiles/edit_cache.dir
+/home/danielk/sysmon/bulid/CMakeFiles/rebuild_cache.dir
+/home/danielk/sysmon/bulid/CMakeFiles/list_install_components.dir
+/home/danielk/sysmon/bulid/CMakeFiles/install.dir
+/home/danielk/sysmon/bulid/CMakeFiles/install/local.dir
+/home/danielk/sysmon/bulid/CMakeFiles/install/strip.dir
