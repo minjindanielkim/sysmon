@@ -1,8 +1,9 @@
 #include "stats.h"
 #include <sys/sysctl.h>
 #include <mach/mach.h>
-#include <thread>
-#include <chrono>
+#include <algorithm>
+#include <cstdlib>
+#include <ctime>
 
 MemInfo getMemInfo() {
     // Total RAM (same as before)
@@ -31,55 +32,113 @@ MemInfo getMemInfo() {
     uint64_t compressedPages = vm.compressor_page_count;
 
     uint64_t used = (appPages + wiredPages + compressedPages) * pageSize;
-    return {total, used, true};
+    MemInfo mem{total, used, true};
+
+    // Swap: macOS creates swap files on demand, so total is often 0
+    xsw_usage swap{};
+    size = sizeof(swap);
+    if (sysctlbyname("vm.swapusage", &swap, &size, nullptr, 0) == 0) {
+        mem.swapTotal = swap.xsu_total;
+        mem.swapUsed  = swap.xsu_used;
+    }
+
+    // Kernel's memory pressure level: 1 = normal, 2 = warning, 4 = critical
+    int level = 0;
+    size = sizeof(level);
+    if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nullptr, 0) == 0) {
+        switch (level) {
+            case 1: mem.pressure = MemPressure::Normal;   break;
+            case 2: mem.pressure = MemPressure::Warning;  break;
+            case 4: mem.pressure = MemPressure::Critical; break;
+            default: break;  // leave Unknown
+        }
+    }
+    return mem;
 }
 
-// Reads the CPU tick counters. Returns false if the call fails.
-static bool readCpuTicks(uint64_t& busy, uint64_t& total) {
+SysInfo getSysInfo() {
+    SysInfo info{{0, 0, 0}, 0, false};
+
+    if (getloadavg(info.load, 3) != 3) return info;  // from <stdlib.h>
+
+    // Boot time; uptime = now - boot
+    timeval boot{};
+    size_t size = sizeof(boot);
+    if (sysctlbyname("kern.boottime", &boot, &size, nullptr, 0) != 0) return info;
+
+    std::time_t now = std::time(nullptr);
+    info.uptimeSec = now > boot.tv_sec ? static_cast<uint64_t>(now - boot.tv_sec) : 0;
+    info.ok = true;
+    return info;
+}
+
+// Reads the raw CPU tick counters (summed across all cores).
+// Returns false if the call fails.
+static bool readCpuTicks(uint32_t ticks[CPU_STATE_MAX]) {
     host_cpu_load_info_data_t info;
     mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
     if (host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO,
                         (host_info_t)&info, &count) != KERN_SUCCESS) {
         return false;
     }
-
-    uint64_t user = info.cpu_ticks[CPU_STATE_USER];
-    uint64_t sys  = info.cpu_ticks[CPU_STATE_SYSTEM];
-    uint64_t nice = info.cpu_ticks[CPU_STATE_NICE];
-    uint64_t idle = info.cpu_ticks[CPU_STATE_IDLE];
-
-    busy  = user + sys + nice;
-    total = busy + idle;
+    for (int i = 0; i < CPU_STATE_MAX; ++i) ticks[i] = info.cpu_ticks[i];
     return true;
 }
 
-CpuInfo getCpuInfo() {
-    CpuInfo cpu{"Unknown", 0, 0.0, false};
+CpuSampler::CpuSampler() : model_("Unknown") {
+    static_assert(kStates == CPU_STATE_MAX, "tick array size mismatch");
 
     // CPU model name: a string, so we pass a character buffer
     char model[256];
     size_t size = sizeof(model);
     if (sysctlbyname("machdep.cpu.brand_string", model, &size, nullptr, 0) == 0) {
-        cpu.model = model;
+        model_ = model;
     }
 
     // Number of logical cores
     int cores = 0;
     size = sizeof(cores);
     if (sysctlbyname("hw.logicalcpu", &cores, &size, nullptr, 0) == 0) {
-        cpu.cores = cores;
+        cores_ = cores;
+    }
+}
+
+CpuInfo CpuSampler::sample() {
+    CpuInfo cpu{model_, cores_, 0.0, false};
+
+    uint32_t now[kStates];
+    if (!readCpuTicks(now)) return cpu;
+
+    if (!havePrev_) {
+        // First call: just record a baseline. Nothing to compare against
+        // yet, so measured stays false and the UI shows "--".
+        std::copy(now, now + kStates, prevTicks_);
+        havePrev_ = true;
+        cpu.ok = true;
+        return cpu;
     }
 
-    // Sample the tick counters twice, one second apart
-    uint64_t busy1, total1, busy2, total2;
-    if (!readCpuTicks(busy1, total1)) return cpu;
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    if (!readCpuTicks(busy2, total2)) return cpu;
+    // The kernel counters are 32-bit and wrap around on long uptimes.
+    // Subtracting in uint32_t arithmetic gives the right difference anyway.
+    uint32_t d[kStates];
+    for (int i = 0; i < kStates; ++i) d[i] = now[i] - prevTicks_[i];
 
-    uint64_t totalDiff = total2 - total1;
-    if (totalDiff == 0) return cpu;   // avoid dividing by zero
+    uint64_t busy  = uint64_t(d[CPU_STATE_USER]) + d[CPU_STATE_SYSTEM] + d[CPU_STATE_NICE];
+    uint64_t total = busy + d[CPU_STATE_IDLE];
 
-    cpu.usage = 100.0 * (busy2 - busy1) / totalDiff;
+    // macOS doesn't update these counters continuously: they can stay frozen
+    // for ~0.75 s and then jump. With a short interval, a sample can land in
+    // that gap and see no change. Keep showing the previous result (and keep
+    // the old baseline) rather than flickering to "--" or 0%.
+    if (total == 0) {
+        last_.ok = true;
+        return last_;
+    }
+
+    std::copy(now, now + kStates, prevTicks_);
     cpu.ok = true;
+    cpu.usage = 100.0 * busy / total;
+    cpu.measured = true;
+    last_ = cpu;
     return cpu;
 }
