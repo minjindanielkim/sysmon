@@ -3,6 +3,7 @@ project(sysmon CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Optimised build unless asked otherwise (-DCMAKE_BUILD_TYPE=Debug)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -18,8 +19,13 @@ add_executable(sysmon
     src/ui.cpp
     src/stats_posix.cpp
 )
+
 if(APPLE)
     target_sources(sysmon PRIVATE src/stats_macos.cpp src/proc_macos.cpp src/net_macos.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(sysmon PRIVATE src/stats_linux.cpp src/proc_linux.cpp src/net_linux.cpp)
+else()
+    message(FATAL_ERROR "sysmon only supports macOS and Linux (got ${CMAKE_SYSTEM_NAME})")
 endif()
 
 target_include_directories(sysmon PRIVATE ${CURSES_INCLUDE_DIRS})

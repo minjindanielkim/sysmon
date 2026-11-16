@@ -6,9 +6,9 @@
 // hold disk usage on one mounted volume 
 struct DiskInfo {
   std::string mount; // find mounted partition 
-  uint64_t total; // total size in bytes (here we use uint64_t to signify unsigned 64 bit integer)
-  uint64_t used;  // total used in bytes
-  bool ok; // false if the system call has failed 
+  uint64_t total = 0; // total size in bytes (here we use uint64_t to signify unsigned 64 bit integer)
+  uint64_t used = 0;  // total used in bytes
+  bool ok = false; // false if the system call has failed 
 };
 
 // macOS's own judgement of memory health (what Activity Monitor's
