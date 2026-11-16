@@ -1,3 +1,18 @@
+# CMake build output (regenerated on each machine)
 build/
-build-linux/
+cmake-build-*/
+
+# Compiled objects, in case anything is built outside build/
+*.o
+sysmon
+
+# clangd / LSP cache and generated compile database
+.cache/
+compile_commands.json
+
+# macOS Finder metadata
 .DS_Store
+
+# Editor swap/backup files
+*.swp
+*~
